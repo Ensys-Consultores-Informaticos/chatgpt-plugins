@@ -1,0 +1,35 @@
+{
+  "name": "gesia-mcp",
+  "version": "1.9.1",
+  "description": "Consulta expedientes de auditoría de Gesia y diarios contables mediante un servidor MCP local para Windows.",
+  "author": {
+    "name": "Ensys Consultores Informáticos, S.L."
+  },
+  "license": "Proprietary",
+  "keywords": [
+    "gesia",
+    "auditoria",
+    "contabilidad",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo.png",
+    "brandColor": "#4C0084",
+    "displayName": "Gesia MCP",
+    "shortDescription": "Consulta expedientes, diarios y pruebas de muestreo de Gesia en Windows. (v1.9.1)",
+    "longDescription": "Conecta ChatGPT Desktop y Codex con el expediente abierto en Gesia para consultar cuentas, saldos, áreas, riesgos y diarios contables, y con el cliente de muestreo de ForSampling (.cli): pruebas, muestra seleccionada, parámetros y evaluación del auditor. Incluye siete procedimientos de auditoría que preparan el papel de trabajo: continuidad de saldos de apertura, cancelación de saldos (facturas contra pagos y cobros), revisión del contenido de la memoria, identificación de riesgos (NIA-ES 315) registro de ejecución, y las dos pruebas de muestreo de ForSampling: cumplimiento y MUM contra las facturas escaneadas.",
+    "developerName": "Ensys Consultores Informáticos, S.L.",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Obtén el contexto del expediente abierto en Gesia.",
+      "Consulta las cuentas y saldos del expediente.",
+      "Configura el expediente de Gesia para esta sesión."
+    ]
+  }
+}

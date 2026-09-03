@@ -1,0 +1,20 @@
+{
+  "name": "gesia-plugins",
+  "interface": {
+    "displayName": "Gesia Plugins"
+  },
+  "plugins": [
+    {
+      "name": "gesia-mcp",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gesia-mcp"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
