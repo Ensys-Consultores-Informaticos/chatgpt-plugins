@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "gesia": {
-      "command": "./server/gesia_mcp-1.9.3.exe",
+      "command": "./server/gesia_mcp-1.10.0.exe",
       "args": [],
       "cwd": ".",
       "enabled": true,
