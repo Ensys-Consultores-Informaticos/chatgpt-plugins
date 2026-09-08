@@ -59,6 +59,22 @@ Si la columna no existe, el emparejamiento parte de cero, como siempre.
 Se aplica cuenta por cuenta **sobre los apuntes sin puntear**, en este
 orden, y en cuanto uno resuelve toda la cuenta se para ahí:
 
+0. **Grupos por NÚMERO DE DOCUMENTO** (`NN_Factura`), y **solo si suman 0**.
+   Es la clave con la que el auditor empareja a mano, y llega donde ningún
+   criterio de importes puede: una factura de 2.743,70 muerta por tres pagos de
+   914,48 / 914,48 / 914,74 a 30, 60 y 90 días. Los pagos no se parecen a la
+   factura ni entre sí, y la combinatoria del punto 4 tampoco alcanza —no por su
+   tope, sino porque entre 135 apuntes sueltos son más de 7.000 millones de
+   subconjuntos—. Agrupar por documento no busca: **particiona**.
+
+0b. **La apertura contra los pagos de facturas que no están en el ejercicio.**
+   Después del paso 0, un apunte que sigue pendiente, que lleva número de
+   factura, cuyo grupo de ese número no cierra, y que va en sentido contrario a
+   la apertura, es un **pago cuya factura no está aquí**; y si no está, está
+   dentro de la apertura. Si la suma no cierra, se admite **un único apunte más,
+   sin número, cuyo importe sea exactamente el hueco** —la regularización de
+   cierre—. Medido en tres cuentas reales: cierra al céntimo.
+
 1. **Si todo lo pendiente suma 0**, un único índice para esos apuntes.
 2. **Si el total pendiente coincide con el saldo del último apunte** en
    orden cronológico, se cancela todo menos ese último —que queda como
@@ -94,6 +110,14 @@ orden, y en cuanto uno resuelve toda la cuenta se para ahí:
    sin cancelar— buscando subconjuntos, no necesariamente contiguos en
    fecha, que sumen cero.
 
+**La regla que gobierna los pasos 0 y 0b: el número PROPONE y la suma DECIDE.**
+Un grupo por documento se acepta solo si sus apuntes suman cero. Si el campo
+viniera sucio, repetido entre ejercicios o significase otra cosa, ningún grupo
+cerraría y el resultado sería idéntico a no haberlo mirado. El campo nunca es
+autoridad: solo dice por dónde empezar a sumar. Por eso usarlo no tiene riesgo, y
+por eso `reconocer.py` mide **sobre cada cliente** cuánto aporta en vez de darlo
+por bueno en general.
+
 **No se usa el texto de CONCEPTO para decidir qué apuntes van juntos.**
 Fue una posibilidad planteada en el encargo original que dio pie a este
 skill, pero es un emparejamiento difuso sin regla objetiva de cuándo
@@ -102,10 +126,15 @@ importe— ya resolvió sin ambigüedad el caso real usado para calibrar esto
 (una cuenta de clientes del expediente de calibración: 46 de 46 grupos
 correctos, incluida una apertura que solo cancela agrupando tres pagos del
 mismo día). CONCEPTO se conserva en el informe para que el auditor lo lea,
-no para que el algoritmo decida por él. **Tampoco se usan los campos
-`NN_*`** (`NN_Factura`, `NN_CTA1`...): pueden no existir y su semántica no
-está garantizada entre expedientes —comprobado: en el de calibración la factura
-y su pago llevan `NN_Factura` distintos—.
+no para que el algoritmo decida por él. **Los `NN_Cta*` tampoco se usan** para agrupar cuentas: ahí habría que *fiarse*
+de ellos, y para eso están `Left(CUENTA, n)` y el nivel de auditoría.
+
+`NN_Factura` es el caso distinto, y conviene saber por qué: **su semántica no está
+garantizada entre expedientes** —comprobado en el de calibración, donde la factura
+y su pago llevan números distintos, y ahí el paso 0 no habría cerrado nada—. Lo que
+lo hace utilizable no es fiarse de él, es que **un grupo se acepta solo si suma
+cero**: donde el campo no significa lo que parece, no cancela y no estorba. En el
+expediente que motivó el paso, en cambio, pasó de 27 grupos a 50 en una sola cuenta.
 
 La verificación es estructural, no una comprobación externa: **para cada
 índice asignado por el skill, la suma de SALDO de sus apuntes es
@@ -121,15 +150,19 @@ cliente.
 
 ## Dónde están los scripts
 
-Los scripts están en `skills/cancelacion-saldos/scripts/`, dentro de la raíz
-del plugin instalado.
+Los scripts están en `skills/cancelacion-saldos/scripts/`, dentro de la raíz del plugin instalado.
 
-**Sustituye los marcadores de los ejemplos por rutas reales antes de
-ejecutar.** No uses variables de shell: en Windows el intérprete no siempre es
-el mismo y una variable que funciona en una consola no existe en la otra.
+**Sustituye los marcadores de los ejemplos por rutas reales antes de ejecutar.** No uses
+variables de shell: en Windows el intérprete no siempre es el mismo y una variable que
+funciona en una consola no existe en la otra.
 
 - `<PLUGIN>` — la raíz del plugin instalado
-- `<EXTRACTO>` — el CSV que deja el paso 2
+- `<TRABAJO>` — una carpeta de trabajo local para esta sesión, fuera del expediente
+- `<EXTRACTO>` — el fichero que dejó el paso de exportación
+
+**ChatGPT Cowork corre en el equipo del auditor**: los scripts y el MCP comparten disco, así
+que lo que exporta el MCP lo leen los scripts directamente y el papel se escribe en la ruta
+del expediente sin pasos intermedios.
 
 ---
 
@@ -165,8 +198,15 @@ muchas.** Sale de una consulta y no cuesta nada:
 
 ```
 consultar_diario(sql = "SELECT Count(*) AS Cuentas FROM
-  (SELECT DISTINCT CUENTA FROM Diario WHERE CUENTA LIKE '43%')")
+  (SELECT CUENTA FROM Diario WHERE CUENTA LIKE '43%'
+    GROUP BY CUENTA HAVING Abs(Sum(SALDO)) > 0.005)")
 ```
+
+**El `HAVING` no es opcional: es el mismo filtro que la exportación del paso 2**,
+que deja fuera las cuentas que ya cierran a cero. Sin él, el número que se le da
+al auditor no es el de hojas que va a recibir. Medido el 08/09/2026 en un
+expediente real: el grupo 43 tiene **419 cuentas** y solo **71** con saldo vivo,
+así que la pregunta iba con una cifra seis veces mayor que el papel.
 
 Por encima de **20 cuentas**, di cuántas son y espera confirmación —el
 papel llevará una hoja por cada una, y el auditor tiene derecho a saber
@@ -182,10 +222,21 @@ otro y no se asume ninguna opcional:
 consultar_diario(sql = "SELECT TOP 1 * FROM Diario")
 ```
 
-Con eso decides el SELECT: `Indice` **se incluye si existe** (es el punteo
-previo, y el skill lo respeta y lo completa); si no existe, no se pide —
-pedirla da el error de Access *«Pocos parámetros»*. Los campos `NN_*` no se
-piden nunca.
+Con eso decides el SELECT. Dos columnas opcionales, y las dos **se incluyen si
+existen**; si no, no se piden — pedir una que no está da el error de Access
+*«Pocos parámetros»*, que no dice cuál falta:
+
+- **`Indice`**, el punteo previo de la contabilidad. El skill lo respeta y lo
+  completa.
+- **`NN_Factura`**, el número de documento. Es la clave con la que el auditor
+  empareja a mano, y con ella el skill cancela lo que ningún criterio de importes
+  alcanza: una factura pagada en tres plazos desiguales. **Un grupo por número solo
+  se acepta si suma cero**, así que si el campo viniera sucio no cambia nada.
+
+**Los demás `NN_*` no se piden nunca**, y `NN_Factura` no es una excepción a esa
+regla sino a su motivo: los `NN_Cta*` se descartan porque habría que *fiarse* de
+ellos para agrupar cuentas, y aquí no se fía nadie — el número propone y la
+aritmética decide.
 
 **Se exporta a fichero, no se trae al contexto.** `exportar_consulta`
 ejecuta la consulta y la deja en disco; solo hace falta el recuento de
@@ -199,7 +250,7 @@ SQL, con una subconsulta por `CUENTA`:
 ```
 exportar_consulta(
   fuente = "diario",
-  sql = "SELECT FECHA, ASIENTO, CUENTA, NOMBRE, CONCEPTO, DEBE, HABER, SALDO, Indice
+  sql = "SELECT FECHA, ASIENTO, CUENTA, NOMBRE, CONCEPTO, DEBE, HABER, SALDO
          FROM Diario
          WHERE CUENTA IN (SELECT CUENTA FROM Diario
                            WHERE CUENTA LIKE '43%'
@@ -207,6 +258,12 @@ exportar_consulta(
          ORDER BY CUENTA, FECHA",
   ruta = "<TEMP>/gesia-cancelacion/extracto.csv")
 ```
+
+**Ese SELECT es el mínimo seguro: a él se le AÑADEN `Indice` y `NN_Factura`, una a
+una y solo si el `SELECT TOP 1 *` de arriba las ha mostrado.** Van fuera del ejemplo
+a propósito, porque el ejemplo es lo que se copia: pedir una columna que no está
+aborta la consulta con el «Pocos parámetros» de Access, que no dice cuál falta. Pasó
+el 08/09/2026 en este mismo diario, que trae `NN_Factura` pero no `Indice`.
 
 El umbral de `0,005` es medio céntimo, el mismo `TOL` que usa
 `lib_cancelacion.py`: por debajo de eso el saldo es residuo de redondeo, no un
@@ -226,8 +283,51 @@ grupos de cuentas en la misma sesión: nada de `extracto_clientes.csv` ni
 variantes por ejecución. `exportar_consulta` sobrescribe avisando, así que
 el residuo queda en un fichero en vez de acumularse.
 
-El extracto queda en `<EXTRACTO>` = `<TEMP>/gesia-cancelacion/extracto.csv`, y de
-ahí lo leen los scripts de los pasos siguientes.
+Los ficheros exportados van a `<TRABAJO>`, que es una carpeta local: aquí no hay contenedor ni copias que subir. Reutiliza la misma carpeta en toda la sesión.
+
+### Paso 2b — Comprobar que el extracto se lee
+
+```bash
+<EXTRACTO> = "<TEMP>/gesia-cancelacion/extracto.csv"
+```
+
+**Comprueba que el fichero se lee antes de seguir** —`head -2 "<EXTRACTO>"` basta—. Es lo
+que separa un fallo evidente de exportar dos veces sin entender por qué la primera no
+valía, que es lo que pasó el 27/08/2026.
+
+### Paso 2c — Reconocer el extracto y preguntar (no te lo saltes)
+
+**La cancelación de saldos no tiene un algoritmo único: depende de cómo pague el cliente
+y de qué columnas trajo el diario.** La mejora más grande que ha tenido este skill vino de
+una columna **opcional** que antes no se pedía nunca. Lanzarse a cincuenta cuentas sin
+haber mirado eso es gastar el trabajo entero para acabar con un papel malo.
+
+Así que antes de generar nada, una pasada en seco:
+
+```bash
+python "<PLUGIN>\skills\cancelacion-saldos\scripts\reconocer.py" --entrada "<extracto>"
+```
+
+No escribe ningún fichero. Dice qué columnas hay, **cuánto cancelaría cada señal medido
+sobre este cliente**, cuántas aperturas se quedarían sin cerrar y con qué importe, qué
+cuentas se atascan, y los grupos que se quedan a un céntimo de cuadrar.
+
+**Y termina con las preguntas que hay que hacerle al auditor**, que son solo las que el
+script no puede contestar solo. Trasládaselas y **espera respuesta**: lo que se mide no se
+pregunta, y lo que se pregunta cambia el resultado.
+
+- **Si falta el número de documento**, pregunta si el diario lo trae con otro nombre. Es la
+  señal que más cancela.
+- **Si quedan aperturas sin cerrar**, pregunta por el mayor del ejercicio anterior. Matar
+  la apertura es lo que más vale del procedimiento.
+- **Si hay grupos que se quedan en céntimos**, pregunta si se pueden barrer y con qué
+  umbral. Es materialidad y la decide el auditor: por defecto se quedan pendientes, y de
+  momento el skill **no** sabe barrerlas —si dice que sí, dilo al entregar como limitación—.
+- **Pregunta siempre cómo paga o cobra el cliente.** Plazos, remesas, confirming, pagos
+  parciales.
+
+Lo que responda **no manda sobre la aritmética**: una pista del auditor propone por dónde
+sumar, y el grupo se acepta solo si suma cero. Por eso preguntar no tiene riesgo.
 
 ### Paso 3 — Verificar y generar el papel (puede abortar)
 
@@ -235,7 +335,8 @@ Una sola orden: comprueba el contrato y, solo si se puede seguir, escribe el
 papel. Antes eran dos llamadas y no hacía falta volver entre una y otra.
 
 ```bash
-python "<PLUGIN>/skills/cancelacion-saldos/scripts/ejecutar_cancelacion.py" --entrada "<EXTRACTO>" --salida "<expediente>/InformesGesia/CancelacionSaldos/Cancelacion Saldos <GRUPO> <CLIENTE> <EJERCICIO>.xlsx"
+<PAPEL> = "Cancelacion Saldos <GRUPO> <CLIENTE> <EJERCICIO>.xlsx"
+python "<PLUGIN>\skills\cancelacion-saldos\scripts\ejecutar_cancelacion.py" --entrada "<EXTRACTO>" --salida "<TRABAJO>\<PAPEL>"
 ```
 
 Salida `2` → **para**: el contrato no se cumple —faltan columnas, hay fechas o
@@ -248,8 +349,7 @@ vacío que hace el papel menos legible. **Léelos y cuéntalos al entregar**, no
 los escondas. La línea C05 dice si el diario trae punteo previo y cuánto: úsala
 al explicar el resultado.
 
-El script escribe directamente en el expediente y crea el árbol si no existe.
-
+Pásale a `--salida` la ruta del expediente directamente: el script crea el árbol `InformesGesia`. Si el expediente está en OneDrive, el entorno puede pedir autorización antes de escribir: pídesela al usuario y repite.
 **Si el expediente está en OneDrive, el entorno puede rechazar la escritura antes
 de ejecutar nada** y pedir autorización expresa para escribir datos contables ahí.
 No es un fallo del skill ni del expediente: pídesela al usuario, explicando que es
@@ -312,11 +412,11 @@ cuéntalo como lo que es: un posible error de punteo en la contabilidad del
 cliente, que el auditor tendrá que mirar.
 
 **Los temporales.** Llama a `limpiar_exportaciones()`: borra el extracto,
-que lleva contabilidad del cliente. No hay que decirle qué fichero: borra lo
-que él mismo escribió. Si algo no se puede borrar (típicamente
+que lleva contabilidad del cliente. Funciona igual en local y en Cowork —lo
+borra el MCP, que corre en la máquina del usuario— y no hay que decirle qué
+fichero: borra lo que él escribió. Si algo no se puede borrar (típicamente
 un `.csv` abierto en Excel), lo dice con su ruta: trasládala al usuario.
-No hace falta borrar nada más: `limpiar_exportaciones()` se lleva también el
-directorio que había creado.
+Borra tú el directorio de trabajo aparte, si creaste uno.
 
 ---
 
@@ -357,7 +457,7 @@ directorio que había creado.
 ## Comprobar que el skill funciona
 
 ```bash
-python "<PLUGIN>/skills/cancelacion-saldos/scripts/probar_cancelacion.py"
+python "<PLUGIN>\skills\cancelacion-saldos\scripts\probar_cancelacion.py"
 ```
 
 No hace falta Gesia: usa un fixture sintético con ocho cuentas de prueba
