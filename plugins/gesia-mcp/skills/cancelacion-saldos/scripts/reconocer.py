@@ -216,7 +216,14 @@ def _informe(info: dict) -> list[str]:
         P.append("¿El numero de documento se reutiliza entre ejercicios? Si se reutiliza, hay "
                  "que exigir ademas una ventana de fechas.")
 
-    L += ["", "  PREGUNTAS AL AUDITOR antes de procesar:"]
+    # El aviso va aqui y no solo en el SKILL.md porque esto es lo ultimo que el
+    # modelo lee antes de escribir su mensaje. El 08/09/2026, en ChatGPT Cowork,
+    # reescribio el bloque a su manera y perdio una pregunta entera.
+    L += ["",
+          "  PREGUNTAS AL AUDITOR antes de procesar.",
+          "  TRASLADALAS TAL CUAL, TODAS Y CON SU NUMERO: no las resumas, no las juntes",
+          "  y no conviertas ninguna en una afirmacion. Luego espera respuesta.",
+          ""]
     L += [f"    {i}. {q}" for i, q in enumerate(P, start=1)]
     if info["casi_cuadran"]:
         L += ["", "  los grupos que se quedan a un centimo:"]
