@@ -4,7 +4,7 @@
         --salida "<expediente>/InformesGesia/CancelacionSaldos/Cancelacion Saldos <CLIENTE>.xlsx"
 
 Una hoja "Resumen" con una fila por cuenta, y una hoja por cuenta con el
-detalle FECHA / CUENTA / NOMBRE / CONCEPTO / SALDO / INDICE / ORIGEN, en
+detalle FECHA / CUENTA / NOMBRE / [CONCEPTO, si viene] / SALDO / INDICE / ORIGEN, en
 orden cronologico y con autofiltro. Dos colores, y ninguno mas:
 
   - gris     (fila entera) el apunte venia ya punteado en la contabilidad
@@ -30,6 +30,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -66,7 +67,8 @@ def _hoja_cuenta(wb: Workbook, cuenta: str, res, info: dict) -> dict:
     ws["A1"].font = Font(name=FONT, bold=True, size=13)
     ws["A2"] = ("Emparejamiento de facturas y pagos — gris: punteado ya en la "
                 "contabilidad; amarillo: importe sin parear, que compone el "
-                "saldo vivo de la cuenta")
+                "saldo vivo de la cuenta. ORIGEN dice el paso que formo cada grupo: "
+                "documento, apertura, total, importe, acumulacion o combinacion")
     ws["A2"].font = Font(name=FONT, italic=True, size=9, color="595959")
     # la banda de titulo llega hasta la ultima columna, que es una mas cuando el
     # extracto trae el numero de documento
@@ -82,10 +84,15 @@ def _hoja_cuenta(wb: Workbook, cuenta: str, res, info: dict) -> dict:
     # al cruzar este papel con uno real: hubo que casar por fecha e importe, y
     # dos apuntes identicos del mismo dia colapsaban en uno.
     con_asi = "ASIENTO" in res.columns
-    cab = ["FECHA"]
+    # FECHA DOC. va si algun apunte la trae: es la fecha del documento que el MCP
+    # deriva del concepto en local -o leida del concepto si viajo-, y sin el
+    # concepto en el papel es la unica forma de que el auditor la vea
+    con_fdoc = "FECHA_DOC" in res.columns and bool(res["FECHA_DOC"].notna().any())
+    cab = ["FECHA"] + (["FECHA DOC."] if con_fdoc else [])
     if con_asi:
         cab.append("ASIENTO")
-    cab += ["CUENTA", "NOMBRE", "CONCEPTO"]
+    con_con = "CONCEPTO" in res.columns
+    cab += ["CUENTA", "NOMBRE"] + (["CONCEPTO"] if con_con else [])
     if con_fra:
         cab.append("FACTURA")
     cab += ["SALDO", "INDICE", "ORIGEN"]
@@ -108,9 +115,11 @@ def _hoja_cuenta(wb: Workbook, cuenta: str, res, info: dict) -> dict:
     fila = fila_cab + 1
     for _, r in ordenado.iterrows():
         valores = [r["FECHA"].to_pydatetime()]
+        if con_fdoc:
+            valores.append(r["FECHA_DOC"].to_pydatetime() if pd.notna(r["FECHA_DOC"]) else None)
         if con_asi:
             valores.append(str(r.get("ASIENTO", "") or ""))
-        valores += [r["CUENTA"], r["NOMBRE"], r["CONCEPTO"]]
+        valores += [r["CUENTA"], r["NOMBRE"]] + ([r["CONCEPTO"]] if con_con else [])
         if con_fra:
             valores.append(r.get("FACTURA", "") or "")
         valores += [float(r["SALDO"]), int(r["INDICE"]), r["ORIGEN"]]
@@ -125,7 +134,7 @@ def _hoja_cuenta(wb: Workbook, cuenta: str, res, info: dict) -> dict:
             c = ws.cell(fila, j, v)
             c.font = Font(name=FONT, size=10)
             c.border = BORDE
-            if j == col["FECHA"]:
+            if j in (col["FECHA"], col.get("FECHA DOC.", -1)):
                 c.number_format = FORMATO_FECHA
             elif j == col["SALDO"]:
                 c.number_format = FORMATO_EURO
@@ -137,47 +146,51 @@ def _hoja_cuenta(wb: Workbook, cuenta: str, res, info: dict) -> dict:
                 c.fill = relleno_fila
         fila += 1
 
+    # Las filas de totales tambien van por nombre: la etiqueta en la columna
+    # anterior a SALDO y la cifra bajo SALDO. Iban a las posiciones 4 y 5 fijas, y
+    # con ASIENTO, CONCEPTO o FACTURA delante el TOTAL caia bajo otra columna.
+    j_saldo, j_etq = col["SALDO"], col["SALDO"] - 1
     fila_total = fila
-    ws.cell(fila_total, 4, "TOTAL").font = Font(name=FONT, bold=True, size=10)
+    ws.cell(fila_total, j_etq, "TOTAL").font = Font(name=FONT, bold=True, size=10)
     total = round(float(ordenado["SALDO"].sum()), 2)
-    c = ws.cell(fila_total, 5, total)
+    c = ws.cell(fila_total, j_saldo, total)
     c.font = Font(name=FONT, bold=True, size=10)
     c.number_format = FORMATO_EURO
-    for j in range(1, 8):
+    for j in range(1, len(cab) + 1):
         ws.cell(fila_total, j).fill = TOTAL_FILL
 
     fila_pend = fila_total + 1
-    ws.cell(fila_pend, 4, "Pendiente sin cancelar (INDICE = 0)").font = (
+    ws.cell(fila_pend, j_etq, "Pendiente sin cancelar (INDICE = 0)").font = (
         Font(name=FONT, size=9, italic=True))
     pendiente = round(float(info["suma_indice_0"]), 2)
-    c = ws.cell(fila_pend, 5, pendiente)
+    c = ws.cell(fila_pend, j_saldo, pendiente)
     c.font = Font(name=FONT, bold=True, size=10)
     c.number_format = FORMATO_EURO
 
     fila_sig = fila_pend + 1
     descuadre = round(float(info["descuadre_punteo_previo"]), 2)
     if abs(descuadre) > 0.005:
-        ws.cell(fila_sig, 4, "Descuadre del punteo contable (grupos previos "
-                             "que no suman 0)").font = Font(name=FONT, size=9, italic=True)
-        c = ws.cell(fila_sig, 5, descuadre)
+        ws.cell(fila_sig, j_etq, "Descuadre del punteo contable (grupos previos "
+                                 "que no suman 0)").font = Font(name=FONT, size=9, italic=True)
+        c = ws.cell(fila_sig, j_saldo, descuadre)
         c.font = Font(name=FONT, bold=True, size=10, color="C00000")
         c.number_format = FORMATO_EURO
         fila_sig += 1
 
     ok = info["coincide_total_con_no_cancelado"] and not info["grupos_con_error"]
-    ws.cell(fila_sig, 4, "Verificacion").font = Font(name=FONT, size=9, italic=True)
-    c = ws.cell(fila_sig, 5, "OK" if ok else "REVISAR")
+    ws.cell(fila_sig, j_etq, "Verificacion").font = Font(name=FONT, size=9, italic=True)
+    c = ws.cell(fila_sig, j_saldo, "OK" if ok else "REVISAR")
     c.font = Font(name=FONT, bold=True, size=10, color="000000" if ok else "C00000")
 
     # los anchos, tambien por nombre y no por posicion
-    anchos = {"FECHA": 12, "ASIENTO": 9, "CUENTA": 13, "NOMBRE": 20, "CONCEPTO": 34,
-              "FACTURA": 14, "SALDO": 15, "INDICE": 9, "ORIGEN": 11}
+    anchos = {"FECHA": 12, "FECHA DOC.": 12, "ASIENTO": 9, "CUENTA": 13, "NOMBRE": 20,
+              "CONCEPTO": 34, "FACTURA": 14, "SALDO": 15, "INDICE": 9, "ORIGEN": 11}
     for h, w in anchos.items():
         if h in col:
             ws.column_dimensions[get_column_letter(col[h])].width = w
     ws.freeze_panes = "A" + str(fila_cab + 1)
     # solo las filas de datos: las de totales quedan fuera del filtro
-    ws.auto_filter.ref = "A" + str(fila_cab) + ":G" + str(fila - 1)
+    ws.auto_filter.ref = "A" + str(fila_cab) + ":" + ultima + str(fila - 1)
 
     return {
         "cuenta": cuenta,
@@ -248,9 +261,37 @@ def _hoja_criterios(ws, h: dict) -> None:
     f = linea(f, "Fecha que se usa para emparejar", "contable",
               "La del asiento. No se usa el texto del concepto para decidir que apuntes "
               "van juntos.")
+    fuente_fd = h.get("fuente_fecha_doc")
     f = linea(f, "Fecha que se usa para informar", "del documento",
-              "La que la propia factura lleva escrita en el concepto, cuando la trae. "
-              "Solo para los recuentos de abajo.")
+              {"FechaEnConcepto": (
+                   "La que la factura lleva escrita en el concepto, extraida en local por "
+                   "el MCP de Gesia (FechaEnConcepto): el texto del concepto no ha salido "
+                   "del equipo. Solo para los recuentos de abajo."),
+               "CONCEPTO": (
+                   "La que la factura lleva escrita en el concepto, leida aqui del propio "
+                   "CONCEPTO, que el auditor autorizo exportar. Solo para los recuentos de "
+                   "abajo.")}.get(
+                  fuente_fd, "No disponible: el extracto no trae fecha de documento."))
+    fuente_doc = h.get("fuente_documento")
+    if fuente_doc and str(fuente_doc).lower() == "numeroenconcepto":
+        nota_doc = ("Derivado del concepto en local por el MCP de Gesia (NumeroEnConcepto): "
+                    "el diario no trae columna de numero de factura. Un grupo por numero "
+                    "solo se acepta si suma cero, asi que un numero mal leido no empareja "
+                    "nada: el numero propone y la suma decide.")
+    elif fuente_doc:
+        nota_doc = ("Columna '" + str(fuente_doc) + "' del diario del cliente. Un grupo por "
+                    "numero solo se acepta si suma cero.")
+    else:
+        nota_doc = ("Ninguno: el diario no trae columna de numero de factura y el concepto "
+                    "no lleva ninguno reconocible. El paso 0 no ha actuado.")
+    cand = h.get("candidatas_documento") or []
+    if len(cand) > 1:
+        nota_doc += (" Habia " + str(len(cand)) + " columnas candidatas y se eligio la que mas "
+                     "grupos cierra a cero EN ESTE EXTRACTO: "
+                     + " · ".join((f"{c} vacia" if not t[3] else f"{c} {z}/{g}")
+                                  for t in cand for c, g, z in [t[:3]]) + ".")
+    f = linea(f, "Numero de documento del paso 0",
+              (str(fuente_doc) if fuente_doc else "ninguno"), nota_doc)
     f += 1
     f = linea(f, "LO QUE ESTE PAPEL NO PRUEBA", None,
               "Un grupo es una cancelacion ARITMETICA: sus apuntes suman cero. No es "
@@ -262,6 +303,14 @@ def _hoja_criterios(ws, h: dict) -> None:
     f = linea(f, "Cuentas procesadas", h["cuentas"])
     f = linea(f, "Apuntes", h["apuntes"])
     f = linea(f, "Grupos evaluados", h["grupos_evaluados"])
+    por_paso = h.get("grupos_por_paso") or {}
+    if por_paso:
+        f = linea(f, "Grupos nuevos, por el paso que los formo",
+                  " · ".join(f"{k} {v}" for k, v in por_paso.items()),
+                  "Los de «acumulación» y «combinación» cierran por aritmetica sobre "
+                  "importes que no se parecen: son los que merecen una segunda mirada, "
+                  "y mas cuanto mas apuntes tengan. La columna ORIGEN de cada hoja lo "
+                  "dice grupo a grupo.")
     if h["grupos_no_evaluables"]:
         f = linea(f, "Grupos no evaluables", h["grupos_no_evaluables"],
                   "No se puede distinguir que lado son documentos y cual pagos: no "
@@ -276,10 +325,15 @@ def _hoja_criterios(ws, h: dict) -> None:
     f = linea(f, "  sigue viva", h["aperturas_vivas"])
     f = linea(f, "  importe vivo", float(h["aperturas_importe_vivo"]))
     f = linea(f, "Aperturas NO identificadas", h["aperturas_no_identificadas"],
-              "varios apuntes el 1 de enero, o cuenta de un solo apunte: no se sabe cual "
-              "es la apertura, asi que el emparejamiento NO la ha intentado. No es que no "
-              "se haya podido cerrar, es que no se ha mirado")
+              "varios apuntes el 1 de enero: no se sabe cual es la apertura, asi que el "
+              "emparejamiento NO la ha intentado. No es que no se haya podido cerrar, es "
+              "que no se ha mirado")
     f = linea(f, "  importe", float(h["aperturas_importe_no_identificado"]))
+    f = linea(f, "Cuentas de un solo apunte (del 1 de enero)", h.get("cuentas_un_apunte", 0),
+              "No hay nada que cancelar: un unico movimiento vivo. Es lo normal en una "
+              "cuenta cuyo contrapunto esta en otro ejercicio o que se abrio con saldo y "
+              "no se ha movido. No es un frente abierto del emparejamiento.")
+    f = linea(f, "  importe", float(h.get("importe_un_apunte", 0.0)))
     f = linea(f, "Cuentas sin apertura detectada", h["cuentas_sin_apertura"],
               "Puede ser una cuenta abierta en el ejercicio, o que el diario no traiga "
               "el asiento de apertura. Si el saldo inicial deberia estar y no aparece, "
@@ -287,6 +341,16 @@ def _hoja_criterios(ws, h: dict) -> None:
 
     f += 1
     f = titulo(f, "PAGOS ANTERIORES A SU FACTURA")
+    if not h.get("fecha_doc_disponible", True):
+        # Sin fecha de documento -ni derivada por el MCP ni leida del concepto-
+        # calcular esto con la fecha contable daria una cifra inflada con aspecto
+        # de hallazgo. Se dice y no se enseña ninguna.
+        f = linea(f, "NO EVALUADO", "—",
+                  "El extracto no trae fecha de documento: ni FechaEnConcepto -que el MCP "
+                  "deriva en local si el SELECT pide CONCEPTO- ni el propio CONCEPTO. Sin "
+                  "ella, ni este apartado ni el plazo de pago se han calculado. No significa "
+                  "que no haya hallazgos: significa que no se han buscado.")
+        return
     if not h["grupos_evaluados"]:
         # Un cero aqui se leeria como "no hay hallazgos" cuando lo que pasa es
         # que no se ha mirado. Se dice, y no se enseña ninguna cifra.
@@ -299,6 +363,12 @@ def _hoja_criterios(ws, h: dict) -> None:
     f = linea(f, "Con la fecha del documento", h["anomalos"],
               "Los que hay que mirar: el pago es anterior a la fecha que la factura "
               "lleva escrita.")
+    f = linea(f, "Solo con la fecha contable (la factura no lleva fecha de documento)",
+              h.get("anomalos_sin_fecha_doc", 0),
+              "El pago es anterior al ASIENTO de una factura que no lleva fecha de "
+              "documento: no se puede distinguir un registro a fin de mes de un pago "
+              "anticipado. NO son hallazgos confirmados; para saberlo hay que ver el "
+              "documento.")
     f = linea(f, "  la pareja venia forzada por el importe", h["anom_forzados"],
               "Ese importe aparece una sola vez a cada lado: no habia emparejamiento "
               "alternativo, asi que no es una eleccion del papel.")
@@ -411,6 +481,18 @@ def main() -> int:
     if len(filas_resumen) > MAX_LISTA:
         print("  ... y " + str(len(filas_resumen) - MAX_LISTA)
               + " cuenta(s) mas: ver hoja Resumen")
+    # El agregado va SIEMPRE, y despues del corte: con 69 cuentas el listado se
+    # cortaba en la 30 y habia que abrir el Excel para saber el pendiente total y
+    # si todas verificaban (dos registros de ejecucion lo pidieron, 10/09/2026).
+    no_ok = [f for f in filas_resumen if not f["ok"]]
+    print("  TOTAL " + str(len(filas_resumen)) + " cuenta(s) | "
+          + str(sum(f["apuntes"] for f in filas_resumen)) + " apuntes | "
+          + str(sum(f["grupos_previos"] for f in filas_resumen)) + " grupos previos | "
+          + str(sum(f["grupos_nuevos"] for f in filas_resumen)) + " nuevos | "
+          + str(sum(f["sin_cancelar"] for f in filas_resumen)) + " sin cancelar | pendiente total "
+          + format(sum(f["pendiente"] for f in filas_resumen), ",.2f") + " € | verificacion: "
+          + ("todas OK" if not no_ok else str(len(no_ok)) + " REVISAR ("
+             + ", ".join(str(f["cuenta"]) for f in no_ok[:8]) + ("..." if len(no_ok) > 8 else "") + ")"))
 
     con_descuadre = [f for f in filas_resumen if abs(f["descuadre_previo"]) > 0.005]
     if con_descuadre:

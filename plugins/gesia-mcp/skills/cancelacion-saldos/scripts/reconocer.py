@@ -55,6 +55,12 @@ def reconocer(df) -> dict:
             "numero_documento": tiene_fra,
             "asiento": "ASIENTO" in df.columns,
             "concepto": "CONCEPTO" in df.columns,
+            # de donde sale cada cosa: columna del diario, o derivado del concepto
+            # en local por el MCP (que es lo normal desde la 1.11.0)
+            "fuente_documento": df.attrs.get("fuente_documento"),
+            "candidatas_documento": df.attrs.get("candidatas_documento") or [],
+            "fecha_documento": bool("FECHA_DOC" in df.columns and df["FECHA_DOC"].notna().any()),
+            "fuente_fecha_doc": df.attrs.get("fuente_fecha_doc"),
         },
         "sin_documento": int((df["FACTURA"] == "").sum()) if tiene_fra else None,
         "cuentas_detalle": [],
@@ -81,7 +87,11 @@ def reconocer(df) -> dict:
             # apertura (varios ese dia, o cuenta de un solo apunte): NO se ha
             # intentado, y eso no es lo mismo que no haber podido
             "apertura_no_identificable": bool(
-                idx_ap is None and len(res) and orden.iloc[0]["FECHA"].month == 1
+                idx_ap is None and len(res) > 1 and orden.iloc[0]["FECHA"].month == 1
+                and orden.iloc[0]["FECHA"].day == 1),
+            # un solo apunte, del 1 de enero: no hay nada que cancelar; va aparte
+            "un_solo_apunte": bool(
+                len(res) == 1 and orden.iloc[0]["FECHA"].month == 1
                 and orden.iloc[0]["FECHA"].day == 1),
             "apertura_aparente": round(float(orden.iloc[0]["SALDO"]), 2) if len(res) else 0.0,
             "total": round(float(res["SALDO"].sum()), 2),
@@ -112,6 +122,10 @@ def reconocer(df) -> dict:
         "no_identificadas_detalle": sorted(
             [(c["cuenta"], c["nombre"], c["apertura_aparente"]) for c in d
              if c["apertura_no_identificable"]],
+            key=lambda x: -abs(x[2])),
+        "un_solo_apunte_detalle": sorted(
+            [(c["cuenta"], c["nombre"], c["apertura_aparente"]) for c in d
+             if c["un_solo_apunte"]],
             key=lambda x: -abs(x[2])),
     }
     # patron de pago: cuantos grupos de mas de dos apuntes salen del documento.
@@ -147,8 +161,21 @@ def _informe(info: dict) -> list[str]:
         "  COLUMNAS OPCIONALES:",
         f"    punteo previo (Indice) ....... {'SI' if cols['punteo_previo'] else 'NO'}",
         f"    numero de documento .......... {'SI' if cols['numero_documento'] else 'NO'}"
-        + (f" ({info['sin_documento']} apuntes sin numero)"
+        + ((" (derivado del concepto por el MCP, NumeroEnConcepto; "
+            if str(cols.get("fuente_documento") or "").lower() == "numeroenconcepto"
+            else f" (columna {cols.get('fuente_documento')}; ")
+           + f"{info['sin_documento']} apuntes sin numero utilizable: vacio o 0)"
            if cols["numero_documento"] else "  <-- SIN ESTO EL RESULTADO ES MUCHO PEOR"),
+        *([("    columnas candidatas a numero, medidas SOBRE ESTE EXTRACTO (no se heredan de otro "
+            "grupo del mismo diario): " + " · ".join(
+                (f"{t[0]} VACIA aqui" if not t[3] else f"{t[0]} cierra {t[2]} de {t[1]} grupos"
+                 + ("" if t[1] else f" ({t[3]} apuntes con valor, ninguno repetido)"))
+                for t in cols["candidatas_documento"])
+            + "  -> elegida " + str(cols.get("fuente_documento")) + " (la que mas cierra; dilo al entregar)")]
+          if len(cols["candidatas_documento"]) > 1 else []),
+        f"    fecha de documento ........... {'SI' if cols['fecha_documento'] else 'NO'}"
+        + (f" ({'derivada por el MCP, FechaEnConcepto' if cols.get('fuente_fecha_doc') == 'FechaEnConcepto' else 'leida del concepto'})"
+           if cols["fecha_documento"] else ""),
         f"    asiento ...................... {'SI' if cols['asiento'] else 'NO'}",
         "",
         "  LO QUE SE CANCELARIA, medido sobre este extracto:",
@@ -170,13 +197,22 @@ def _informe(info: dict) -> list[str]:
     if r["no_identificadas_detalle"]:
         L += ["",
               f"    NO IDENTIFICABLES ({len(r['no_identificadas_detalle'])}): varios apuntes el "
-              "1 de enero, o cuenta de un solo apunte.",
+              "1 de enero.",
               "    El emparejamiento NO las ha intentado: no es que no cuadren, es que no se "
               "sabe cual es la apertura."]
         L += [f"      {c}  {n:30} {_eur(imp):>14}"
               for c, n, imp in r["no_identificadas_detalle"][:10]]
         if len(r["no_identificadas_detalle"]) > 10:
             L.append(f"      ... y {len(r['no_identificadas_detalle']) - 10} mas")
+    if r["un_solo_apunte_detalle"]:
+        L += ["",
+              f"    CUENTAS DE UN SOLO APUNTE ({len(r['un_solo_apunte_detalle'])}), del 1 de enero: "
+              "no hay nada que cancelar.",
+              "    No son aperturas sin identificar ni un frente abierto: un unico movimiento vivo."]
+        L += [f"      {c}  {n:30} {_eur(imp):>14}"
+              for c, n, imp in r["un_solo_apunte_detalle"][:10]]
+        if len(r["un_solo_apunte_detalle"]) > 10:
+            L.append(f"      ... y {len(r['un_solo_apunte_detalle']) - 10} mas")
     if r["atascadas"]:
         L += ["",
               f"  CUENTAS QUE SE ATASCAN ({len(r['atascadas'])}): mas de "
@@ -185,10 +221,16 @@ def _informe(info: dict) -> list[str]:
               + (" ..." if len(r["atascadas"]) > 12 else "")]
 
     # ── las preguntas, solo las que cambian el resultado ──────────────────────
+    # cada pregunta lleva sus OPCIONES: son para hacerla con la herramienta de
+    # preguntas al usuario cuando el entorno la tiene (David, 10/09/2026: «me gusta
+    # mas lo de las preguntas» que el bloque de texto). «Otra» siempre existe.
     P = []
     if not cols["numero_documento"]:
-        P.append("¿El diario del cliente trae numero de factura o de documento? Si existe con "
-                 "otro nombre, dime cual: es la señal que mas cancela y el extracto no la trae.")
+        P.append(("¿El diario del cliente trae numero de factura o de documento? Si existe con "
+                  "otro nombre, dime cual: es la señal que mas cancela y el extracto no la trae. "
+                  "Y si va escrito en el concepto, el MCP lo deriva solo: basta pedir CONCEPTO "
+                  "en el SELECT del extracto (el texto no viaja, el numero si).",
+                  ["No, no lo trae", "Si, con este nombre: ..."]))
     if r["aperturas_abiertas"]:
         # con la cuenta y el nombre: sin eso el auditor no puede ir a buscar el
         # mayor de nada, que es justo lo que se le esta pidiendo
@@ -196,41 +238,54 @@ def _informe(info: dict) -> list[str]:
                            for c, n, imp in r["abiertas_detalle"][:6])
         if len(r["abiertas_detalle"]) > 6:
             cuales += f"; y {len(r['abiertas_detalle']) - 6} mas"
-        P.append(f"Quedan {r['aperturas_abiertas']} apertura(s) sin cancelar por "
-                 f"{_eur(r['importe_aperturas_abiertas'])}: {cuales}. ¿Hay mayor del ejercicio "
-                 "anterior de esas cuentas, y donde esta? Con el se puede atar factura por "
-                 "factura, y cerrar aperturas pagadas solo en parte.")
-    if info["casi_cuadran"]:
-        n = len(info["casi_cuadran"])
-        cuales = "; ".join(f"{cta} doc. {fra} ({_eur(s)})"
-                           for cta, fra, s, _ in info["casi_cuadran"][:4])
-        if n > 4:
-            cuales += f"; y {n - 4} mas"
-        P.append(f"Hay {n} grupo(s) de un mismo documento que se quedan a menos de 5 centimos "
-                 f"de cuadrar: {cuales}. ¿Se pueden barrer esas diferencias, y con que umbral? "
-                 "Es materialidad y la decide el auditor: por defecto se quedan pendientes.")
-    P.append("¿Como paga o cobra este cliente? Plazos (30/60/90), remesas que agrupan varias "
-             "facturas, confirming, pagos parciales. Lo que digas cambia el tamaño de grupo "
-             "que se busca.")
+        P.append((f"Quedan {r['aperturas_abiertas']} apertura(s) sin cancelar por "
+                  f"{_eur(r['importe_aperturas_abiertas'])}: {cuales}. ¿Hay mayor del ejercicio "
+                  "anterior de esas cuentas, y donde esta? Con el se puede atar factura por "
+                  "factura, y cerrar aperturas pagadas solo en parte.",
+                  ["No lo tengo", "Si, en esta ruta: ..."]))
+    # Estas dos respuestas NO entran en el calculo (no hay parametro que las lleve): son
+    # para leer bien el papel y para la entrega. Antes la pregunta prometia «cambia el
+    # tamaño de grupo que se busca», y era falso (registro del 10/09/2026).
+    P.append(("¿Como paga o cobra este cliente? No cambia el calculo: sirve para leer los "
+              "tamaños de grupo del papel (plazos = grupos de 3-4; remesas o confirming = "
+              "grupos grandes por acumulacion) y para decirlo al entregar.",
+              ["Plazos (30/60/90)", "Remesas que agrupan varias facturas", "Confirming",
+               "Pagos parciales", "No lo se"]))
     if cols["numero_documento"]:
-        P.append("¿El numero de documento se reutiliza entre ejercicios? Si se reutiliza, hay "
-                 "que exigir ademas una ventana de fechas.")
+        P.append(("¿El numero de documento se reutiliza entre ejercicios? Un grupo por numero "
+                  "solo se acepta si suma cero, asi que no cambia el calculo; si se reutiliza, "
+                  "se avisa al entregar de que un grupo por documento puede juntar dos años.",
+                  ["No", "Si", "No lo se"]))
 
     # El aviso va aqui y no solo en el SKILL.md porque esto es lo ultimo que el
     # modelo lee antes de escribir su mensaje. El 08/09/2026, en ChatGPT Cowork,
     # reescribio el bloque a su manera y perdio una pregunta entera.
     L += ["",
           "  PREGUNTAS AL AUDITOR antes de procesar.",
-          "  TRASLADALAS TAL CUAL, TODAS Y CON SU NUMERO: no las resumas, no las juntes",
-          "  y no conviertas ninguna en una afirmacion. Luego espera respuesta.",
+          "  HAZLAS CON LA HERRAMIENTA DE PREGUNTAS AL USUARIO si el entorno la tiene: una",
+          "  entrada por pregunta, con el texto TAL CUAL y estas opciones (la herramienta ya",
+          "  ofrece «otra» libre; si una opcion acaba en «...», lo que falta lo escribe el",
+          "  auditor ahi). Si no hay herramienta, como lista numerada de texto, TAL CUAL,",
+          "  TODAS Y CON SU NUMERO: no las resumas, no las juntes y no conviertas ninguna",
+          "  en una afirmacion. En los dos casos, luego ESPERA RESPUESTA.",
           ""]
-    L += [f"    {i}. {q}" for i, q in enumerate(P, start=1)]
+    for i, (q, opciones) in enumerate(P, start=1):
+        L.append(f"    {i}. {q}")
+        L.append(f"       Opciones: {' | '.join(opciones)}")
     if info["casi_cuadran"]:
-        L += ["", "  los grupos que se quedan a un centimo:"]
-        for cta, fra, s, n in info["casi_cuadran"][:10]:
-            L.append(f"    cuenta {cta} · documento {fra} · {n} apuntes · descuadre {_eur(s)}")
-        if len(info["casi_cuadran"]) > 10:
-            L.append(f"    ... y {len(info['casi_cuadran']) - 10} mas")
+        # Era una pregunta («¿se pueden barrer?») y el skill no sabe barrer: preguntar
+        # lo que despues no se puede aplicar es peor que no preguntar (dos ejecuciones
+        # lo encontraron). Ahora es un dato, y se cuenta al entregar.
+        n = len(info["casi_cuadran"])
+        L += ["",
+              f"  DATO, no pregunta: {n} grupo(s) de un mismo documento se quedan a menos de 5",
+              "  centimos de cuadrar. El skill NO barre centimos (es materialidad, y el barrido",
+              "  esta pendiente de diseño): se quedan pendientes y hay que decirlo al entregar,",
+              "  con el importe:"]
+        for cta, fra, s, k in info["casi_cuadran"][:10]:
+            L.append(f"    cuenta {cta} · documento {fra} · {k} apuntes · descuadre {_eur(s)}")
+        if n > 10:
+            L.append(f"    ... y {n - 10} mas")
     L += ["",
           "  NADA de esto se ha escrito en disco. Cuando el auditor conteste, se procesa."]
     return L

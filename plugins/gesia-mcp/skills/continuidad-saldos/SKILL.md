@@ -54,19 +54,17 @@ recuento de omitidas se dice en pantalla: el recorte no es silencioso.
 
 ## Dónde están los scripts
 
-Los scripts están en `skills/continuidad-saldos/scripts/`, dentro de la raíz del
-plugin instalado.
+Al cargarse, el runtime indica el **directorio base del skill**. Las rutas
+`scripts/…` son relativas a él, no al directorio de trabajo:
 
-**Sustituye los marcadores de los ejemplos por rutas reales antes de ejecutar.**
-No uses variables de shell: en Windows el intérprete no siempre es el mismo y una
-variable que funciona en una consola no existe en la otra.
+```bash
+SKILL="<directorio base indicado al cargar el skill>"
+TRABAJO="$(pwd)/trabajo" && mkdir -p "$TRABAJO"
+```
 
-- `<PLUGIN>` — la raíz del plugin instalado
-- `<TRABAJO>` — un directorio de trabajo que creas tú, **fuera del expediente**
-
-El diario se lee por el **driver ODBC de Access de 64 bits**, el mismo que usa el
-MCP. Los scripts abren el `.smn` donde está, sin copiarlo ni convertirlo, y no hay
-que indicarles nada.
+El diario se lee con `mdbtools` cuando existe —el caso de Cowork— y por el driver
+ODBC de Access cuando no, que es el caso de la máquina del auditor. El script lo
+decide solo y no hay que indicarle nada.
 
 ---
 
@@ -75,9 +73,19 @@ que indicarles nada.
 ### Paso 1 — Expediente
 
 ```
-configurar()            # sin parámetros: ver estado
+configurar(perfil = "continuidad-saldos")   # primero: lista blanca y nombres tokenizados
 contexto_expediente()
 ```
+
+**Lo primero, antes de leer nada: `configurar(perfil = "continuidad-saldos")`.** Con el perfil, el
+MCP retira del extracto las columnas que este skill no necesita y **tokeniza los nombres de
+terceros** en todo lo que devuelve: verás `PROV 40000012` o `CLI 43000007` donde iría la razón
+social. El nombre no sale del equipo del auditor —ni al contenedor ni a este chat—; el papel lo
+recupera al final con `rehidratar`. Trabaja y habla **por cuenta y por token**: «la apertura de
+PROV 40001013 no cierra». **Nunca preguntes al auditor a quién corresponde un token ni lo
+adivines** por el concepto o por los importes: él lo lee en el papel. Si `configurar()` dice
+`nombres_terceros: en claro — forzado por el auditor`, es que lo ha apagado él; no lo
+vuelvas a encender tú.
 
 Si falta `gs3_file`, **pide la ruta**. Si el servidor API no responde, dile que lo
 arranque en *Herramientas > Gesia - Cuadro de mando > Arrancar servidor API*. Si
@@ -137,19 +145,44 @@ otro fichero aquí.
 En la máquina del auditor no hay nada más que hacer: los scripts abren el `.smn`
 donde está, por ODBC.
 
-Todo corre en la máquina del auditor, así que **no hay nada que subir ni que
-convertir**: pásale al script la ruta del `.smn` tal como la devuelve `configurar`.
+En Cowork hay que subirlo, y **comprimido, porque directo no pasa**: el
+presupuesto de transferencia de `device_stage_files` es de unos 50 segundos y un
+diario de un ejercicio completo no cabe. Medido: 6,98 MB no pasan, y comprimidos
+son 1,17 MB, que sí.
 
-Lo que sí importa es dónde dejas lo que escribas. Cualquier fichero que generes
-con `exportar_consulta`, y el directorio de trabajo, van a la carpeta temporal del
-sistema o a `<TRABAJO>` — **nunca dentro de la carpeta del expediente**. Ahí van
-los papeles de trabajo, y contabilidad del cliente suelta al lado del papel
-firmado no es un descuido estético: es lo que el auditor archiva.
+**Y tiene que quedar dentro de una carpeta conectada a la sesión**, porque
+`device_stage_files` no puede subir un fichero que esté fuera de ellas — el
+`$TEMP` de Windows no lo está. Corregido el 27/08/2026: antes este bloque
+comprimía a `$TEMP` y así no se puede subir. Ver `docs/arquitectura.md`.
+
+```bash
+# en la maquina del usuario, dentro de la carpeta conectada pero FUERA del
+# expediente: una subcarpeta de trabajo en su raiz
+mkdir -p "<raíz conectada>/_tmp_cowork"
+gzip -c "<smn_file>" > "<raíz conectada>/_tmp_cowork/diario.smn.gz"
+```
+
+**Y no en `InformesGesia`.** Ahí van los papeles de trabajo, y un `.gz` con el
+diario del cliente al lado del papel firmado no es un descuido estético: es
+contabilidad ajena en la carpeta que el auditor archiva. De ahí la subcarpeta de
+trabajo en la raíz de lo conectado, que **se borra al terminar** — la carpeta
+temporal del sistema se limpiaba sola, y esta no.
+
+Luego `device_stage_files` con esa ruta y, en el sandbox:
+
+```bash
+which mdb-export || apt-get install -y mdbtools
+gunzip -c "<staged>/diario.smn.gz" > "$TRABAJO/diario.mdb"
+```
+
+**Y al terminar se borran**, en el paso de entrega. Lo mismo vale para cualquier
+fichero que dejes con `exportar_consulta`: escríbelo en `$TEMP/gesia-continuidad`
+o en el directorio de trabajo, nunca en la carpeta del expediente.
 
 ### Paso 4 — Verificar el contrato (puede abortar)
 
 ```bash
-python "<PLUGIN>/skills/continuidad-saldos/scripts/verificar_contrato.py" --diario "<diario>" \
+python "$SKILL/scripts/verificar_contrato.py" --diario "<diario>" \
     --cierre "<TEMP>/gesia-continuidad/cierre.json" \
     --ejercicio 2025 --ejercicio-anterior 2024 --cliente "<razón social>"
 ```
@@ -163,10 +196,10 @@ cuentas de los grupos 6 y 7.
 ### Paso 5 — Comparar
 
 ```bash
-python "<PLUGIN>/skills/continuidad-saldos/scripts/comparar.py" --diario "<diario>" \
+python "$SKILL/scripts/comparar.py" --diario "<diario>" \
     --cierre "<TEMP>/gesia-continuidad/cierre.json" \
     --ejercicio 2025 --ejercicio-anterior 2024 --cliente "<razón social>" \
-    --salida "<TRABAJO>/resultado.json"
+    --salida "$TRABAJO/resultado.json"
 ```
 
 Imprime el resumen y los hallazgos. **No leas `resultado.json` entero**: el
@@ -195,7 +228,7 @@ que había un ingreso dentro de la apertura.
 ### Paso 6 — El papel de trabajo
 
 ```bash
-python "<PLUGIN>/skills/continuidad-saldos/scripts/generar_papel.py" --resultado "<TRABAJO>/resultado.json" \
+python "$SKILL/scripts/generar_papel.py" --resultado "$TRABAJO/resultado.json" \
     --fecha-cierre "31/12/25" \
     --salida "<expediente>/InformesGesia/ContinuidadSaldos/AG)02 Saldos de Apertura <CLIENTE> <EJERCICIO>.xlsx"
 ```
@@ -213,15 +246,41 @@ Di dónde ha quedado el fichero, **cuántas cuentas lleva y cuántos hallazgos d
 cada clase**. Si no hay ninguno, dilo así: la continuidad está comprobada y no
 hay diferencias. Y recuérdale que:
 
-- el papel es una propuesta y la revisión y la firma son suyas.
+- el papel es una propuesta y la revisión y la firma son suyas;
+
+**Los nombres.** El fichero se ha escrito con tokens. Cuando ya esté en el disco del auditor
+—en Cowork, después de bajarlo al expediente; en local, directamente—, llama a
+`rehidratar(ruta = "<expediente>/InformesGesia/…/<fichero>", leyenda = true)`: sustituye cada
+token por el nombre real, en local, y devuelve recuentos —ni un nombre vuelve aquí—. Con
+`leyenda = true` añade la tabla token → nombre (hoja «Tokens» en el Excel), para que lo que
+has dicho en el chat con tokens se pueda leer en el papel. **Cuéntale al auditor los dos
+números que devuelve** (sustituciones y tokens distintos) y, si hay `tokens_sin_nombre`,
+dilos tal cual: son cuentas que el diccionario no conoce, no las completes tú.
+
+Con este párrafo, y sin llamar «rehidratar» a nada delante del auditor —para él es
+**desanonimizar**—:
+
+> *Papel generado y archivado en el expediente: `InformesGesia\…\<fichero>` (también lo tienes
+> en el chat, aunque esa copia está anonimizada). Nombres ya desanonimizados: N sustituciones,
+> M terceros distintos, ninguno sin nombre, y hoja «Tokens» con la leyenda. El extracto
+> temporal está borrado.*
+
+Si hubo tokens sin nombre, en vez de «ninguno sin nombre» van listados. La copia del chat
+**siempre** está anonimizada —viajó por el contenedor—: dilo, para que no la confunda con el
+papel bueno.
 
 **Los temporales.** Lo que haya escrito `exportar_consulta` lo borra
-`limpiar_exportaciones()`, y esa es la vía: no hay que decirle qué fichero,
-porque borra lo que él mismo escribió. Si algo no se deja borrar (un `.csv`
+`limpiar_exportaciones()`, y esa es la vía: funciona igual en local y en Cowork
+—lo borra el MCP, que corre en la máquina del usuario— y no hay que decirle qué
+fichero, porque borra lo que él escribió. Si algo no se deja borrar (un `.csv`
 abierto en Excel, típicamente), lo dice con su ruta: trasládala al usuario.
 
-El directorio de trabajo va aparte y lo borras tú: elimina `<TRABAJO>` con la
-orden que corresponda a la consola en la que estés.
+El directorio de trabajo va aparte, y ahí sí puede fallar el borrado en Cowork
+—el puente no tiene permiso en el equipo del usuario, comprobado el 25/08/2026—:
+
+```bash
+rm -rf "$TRABAJO"
+```
 
 Si falla, **di las rutas exactas** de lo que queda para que el usuario lo quite.
 Nada de dejarlo caer: son datos de su cliente. Por eso, además, los temporales

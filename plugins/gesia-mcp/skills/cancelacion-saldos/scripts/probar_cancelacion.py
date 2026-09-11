@@ -42,6 +42,22 @@ de punteo previo (la columna Indice que traen muchos .smn):
            2.2b no puede con esto
   9999914  2.2c que NO cierra -- lo mismo sin la regularizacion: la apertura se
            queda pendiente y no se fuerza nada
+  9999915  SIN CONCEPTO -- el auditor decidio que ese texto no saliera de su
+           equipo (rama confidencialidad). Todo funciona igual, el papel no
+           lleva la columna, y los hallazgos por fecha de documento salen
+           como NO EVALUADOS, no como cero: calcularlos con la fecha contable
+           daria una cifra inflada con aspecto de hallazgo
+  9999916  DERIVADAS -- el extracto como lo exporta el MCP 1.11.0: sin CONCEPTO,
+           con NumeroEnConcepto y FechaEnConcepto. El numero hace de FACTURA
+           (con menor prioridad que una columna del diario), la fecha hace de
+           FECHA_DOC, los hallazgos por fecha SI se evaluan, y el papel lleva
+           FECHA DOC. y FACTURA, dice de donde salen, y el TOTAL cae bajo SALDO
+  9999917  DOS CANDIDATAS -- el diario trae NN_Factura y NN_Documento (prueba en
+           frio del 10/09/2026). No decide el orden del SELECT: se puntua cada una
+           por grupos que suman cero y gana la que mas cierra; la comparacion consta.
+           Y ORIGEN dice el paso: documento / apertura / importe / acumulacion.
+           Y los pagos anteriores a una factura SIN fecha de documento van a su
+           propia fila, no a «con la fecha del documento».
 
 Por que hace falta: en una cuenta sin nada que cancelar, un emparejador
 roto y uno correcto pueden dar el mismo resultado (todo en INDICE 0). Que
@@ -56,11 +72,20 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib_cancelacion import (  # noqa: E402
+from lib_cancelacion import (
+    PASO_ACUMULACION,
+    PASO_APERTURA,
+    PASO_DOCUMENTO,
+    PASO_IMPORTE,
+    PASO_TOTAL,
+    PASOS_ORIGEN,  # noqa: E402
     ORIGEN_AUDITORIA,
     ORIGEN_CONTABLE,
     asignar_indices_cuenta,
     verificar_cuenta,
+    analizar_hallazgos,
+    cargar_extracto,
+    procesar_extracto,
 )
 
 
@@ -295,9 +320,11 @@ def main() -> int:
                       "(el maximo previo), y es "
                       + str(int(porc.loc["Fra nueva", "INDICE"])))
         ok = False
-    if not (porc.loc[["Fra nueva", "Pago nuevo"], "ORIGEN"] == ORIGEN_AUDITORIA).all():
+    # el 2.2 («total»: todo menos el ultimo suma cero) llega antes que el 2.3 («importe»)
+    if not porc.loc[["Fra nueva", "Pago nuevo"], "ORIGEN"].isin([PASO_IMPORTE, PASO_TOTAL]).all():
         fallos.append("9999906 (punteo previo): el par nuevo deberia venir con "
-                      "ORIGEN auditoria")
+                      "ORIGEN del paso que lo formo («total» o «importe»), y trae "
+                      + str(porc.loc[["Fra nueva", "Pago nuevo"], "ORIGEN"].tolist()))
         ok = False
     if not _es_cero(res, "Fra pendiente"):
         fallos.append("9999906 (punteo previo): Fra pendiente deberia quedar en INDICE 0")
@@ -446,6 +473,31 @@ def main() -> int:
             print("  - " + f)
         return 1
 
+    # 9999915 -- sin CONCEPTO: nada se rompe y nada se degrada en silencio
+    sin_con = FIXTURES["9999913"].drop(columns=["CONCEPTO"]).copy()
+    sin_con["ASIENTO"] = [str(i) for i in range(1, len(sin_con) + 1)]
+    try:
+        res15, _ = asignar_indices_cuenta(sin_con)
+        emparejo = int(res15.loc[res15["CONCEPTO"] == "Apertura", "INDICE"].iloc[0]) if "CONCEPTO" in res15 else None
+    except KeyError as exc:
+        fallos.append("9999915: sin CONCEPTO el emparejamiento revienta con KeyError " + str(exc))
+        res15 = None
+    if res15 is not None:
+        # el mismo grupo de apertura que en el 9999913: el concepto no pintaba nada
+        ap15 = res15.sort_values("FECHA").iloc[0]
+        if int(ap15["INDICE"]) == 0 or int((res15["INDICE"] == ap15["INDICE"]).sum()) != 5:
+            fallos.append("9999915: sin CONCEPTO la apertura deberia cerrarse igual que en el 9999913")
+        else:
+            print("OK  9999915 (sin CONCEPTO): el emparejamiento da lo mismo, el concepto no decide")
+        h15 = analizar_hallazgos(sin_con, {"9999915": (res15, verificar_cuenta(res15))})
+        if h15.get("fecha_doc_disponible") is not False:
+            fallos.append("9999915: analizar_hallazgos tiene que decir que el concepto NO esta disponible")
+        elif h15["grupos_evaluados"] != 0 or h15["anomalos"] != 0:
+            fallos.append("9999915: sin concepto NO se puede evaluar ningun grupo por fecha de documento "
+                          "(se estaria usando la fecha contable)")
+        else:
+            print("OK  9999915 (sin CONCEPTO): los hallazgos por fecha de documento quedan SIN EVALUAR, no a cero")
+
     # -- el papel: las posiciones de columna se DERIVAN de la cabecera
     # Estaban escritas a mano -j == 5 para el saldo- y al insertar FACTURA el
     # formato de euros y el amarillo se quedaron una columna a la izquierda. Un
@@ -478,6 +530,27 @@ def main() -> int:
                        if c.fill and c.fill.patternType else None)
                 bien.append(str(rgb).endswith("FFFF00")
                             and c.number_format.startswith("#,##0.00"))
+        # y el mismo fixture SIN concepto: el papel no lleva la columna y la hoja de
+        # criterios dice NO EVALUADO donde antes contaba pagos anteriores a su factura
+        f3 = fx.drop(columns=["CONCEPTO"])
+        (tmp / "e2.json").write_text(f3.to_json(orient="records"), encoding="utf-8")
+        ruta2 = tmp / "p2.xlsx"
+        subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "generar_papel.py"),
+                        "--entrada", str(tmp / "e2.json"), "--salida", str(ruta2)],
+                       capture_output=True)
+        if not ruta2.exists():
+            fallos.append("9999915: el papel sin CONCEPTO no se ha podido generar")
+        else:
+            wb2 = load_workbook(ruta2)
+            cab2 = [wb2["9999913"].cell(row=4, column=j).value for j in range(1, 12)]
+            crit = " ".join(str(c.value) for row in wb2["Criterios y hallazgos"].iter_rows()
+                            for c in row if c.value)
+            if "CONCEPTO" in cab2:
+                fallos.append("9999915: el papel no debe llevar la columna CONCEPTO si el extracto no la trae")
+            elif "NO EVALUADO" not in crit:
+                fallos.append("9999915: la hoja de criterios tiene que decir NO EVALUADO, no ensenar ceros")
+            else:
+                print("OK  9999915 (sin CONCEPTO): el papel sale sin la columna y la hoja de criterios dice NO EVALUADO")
         if not ("ASIENTO" in cab and "FACTURA" in cab):
             fallos.append("el papel deberia traer ASIENTO y FACTURA cuando el extracto las trae")
         elif not (bien and all(bien)):
@@ -485,7 +558,158 @@ def main() -> int:
         else:
             print("OK  el papel: ASIENTO y FACTURA presentes, y el amarillo cae en SALDO")
 
-    print("\nTodo detectado. El emparejador ve los catorce casos y las verificaciones cuadran.")
+        # 9999916 -- las derivadas del MCP, de punta a punta
+        f16 = fx.drop(columns=["CONCEPTO"]).rename(columns={"FACTURA": "NumeroEnConcepto"})
+        # la factura viva del año lleva fecha de documento; los pagos y la apertura, no
+        f16["FechaEnConcepto"] = [("2024-05-20" if n == "10" else None) for n in f16["NumeroEnConcepto"]]
+        (tmp / "e16.json").write_text(f16.to_json(orient="records"), encoding="utf-8")
+        df16 = cargar_extracto(tmp / "e16.json")
+        if "FACTURA" not in df16.columns or df16.attrs.get("fuente_documento") != "NumeroEnConcepto":
+            fallos.append("9999916: NumeroEnConcepto tiene que hacer de FACTURA y decirlo en attrs")
+        elif "FECHA_DOC" not in df16.columns or df16.attrs.get("fuente_fecha_doc") != "FechaEnConcepto" \
+                or int(df16["FECHA_DOC"].notna().sum()) != 1:
+            fallos.append("9999916: FechaEnConcepto tiene que hacer de FECHA_DOC (una fila con fecha)")
+        elif "NumeroEnConcepto" in df16.columns or "FechaEnConcepto" in df16.columns:
+            fallos.append("9999916: las columnas de origen se normalizan y no se quedan duplicadas")
+        else:
+            print("OK  9999916 (derivadas): NumeroEnConcepto -> FACTURA y FechaEnConcepto -> FECHA_DOC, con su origen")
+            por16 = procesar_extracto(df16)
+            res16 = por16["9999913"][0]
+            ap16 = res16.sort_values("FECHA").iloc[0]
+            if int(ap16["INDICE"]) == 0 or int((res16["INDICE"] == ap16["INDICE"]).sum()) != 5:
+                fallos.append("9999916: con el numero derivado la apertura tiene que cerrarse como en el 9999913")
+            else:
+                print("OK  9999916 (derivadas): el paso 2.0 agrupa por el numero derivado igual que por NN_Factura")
+            h16 = analizar_hallazgos(df16, por16)
+            if not h16.get("fecha_doc_disponible") or h16.get("fuente_fecha_doc") != "FechaEnConcepto" \
+                    or h16.get("fuente_documento") != "NumeroEnConcepto" or h16["grupos_evaluados"] < 1:
+                fallos.append("9999916: los hallazgos por fecha SE EVALUAN con la fecha derivada, y dicen su origen: " + str(
+                    {k: h16.get(k) for k in ("fecha_doc_disponible", "fuente_fecha_doc", "fuente_documento", "grupos_evaluados")}))
+            else:
+                print("OK  9999916 (derivadas): los hallazgos por fecha de documento se evaluan sin el texto del concepto")
+            ruta16 = tmp / "p16.xlsx"
+            subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "generar_papel.py"),
+                            "--entrada", str(tmp / "e16.json"), "--salida", str(ruta16)],
+                           capture_output=True)
+            if not ruta16.exists():
+                fallos.append("9999916: el papel con las derivadas no se ha podido generar")
+            else:
+                wb16 = load_workbook(ruta16)
+                ws16 = wb16["9999913"]
+                cab16 = [ws16.cell(row=4, column=j).value for j in range(1, 14)]
+                crit16 = " ".join(str(c.value) for row in wb16["Criterios y hallazgos"].iter_rows()
+                                  for c in row if c.value)
+                # la fila de TOTAL es la siguiente a los datos: 6 apuntes desde la fila 5
+                j_saldo = cab16.index("SALDO") + 1
+                etq = ws16.cell(row=5 + len(f16), column=j_saldo - 1).value
+                tot = ws16.cell(row=5 + len(f16), column=j_saldo).value
+                if "FECHA DOC." not in cab16 or "FACTURA" not in cab16 or "CONCEPTO" in cab16:
+                    fallos.append("9999916: el papel tiene que llevar FECHA DOC. y FACTURA, y no CONCEPTO: " + str(cab16))
+                elif "NumeroEnConcepto" not in crit16 or "FechaEnConcepto" not in crit16:
+                    fallos.append("9999916: la hoja de criterios tiene que decir que numero y fecha vienen derivados por el MCP")
+                elif etq != "TOTAL" or not isinstance(tot, (int, float)):
+                    fallos.append("9999916: el TOTAL tiene que caer bajo SALDO, no en una posicion fija: " + str((etq, tot)))
+                else:
+                    print("OK  9999916 (derivadas): el papel lleva FECHA DOC. y FACTURA, dice su origen, y el TOTAL cae bajo SALDO")
+
+        # 9999917 -- dos candidatas: NN_Factura buena, NN_Documento mala (mismo valor en todo)
+        f17 = FIXTURES["9999912"].copy()
+        f17["ASIENTO"] = [str(i) for i in range(1, len(f17) + 1)]
+        f17["FECHA"] = f17["FECHA"].dt.strftime("%Y-%m-%d")
+        f17 = f17.rename(columns={"FACTURA": "NN_Factura"})
+        f17["NN_Documento"] = ["ZZZ", "ZZZ", "ZZZ", "ZZZ", ""]   # un grupo de 4 que NO suma cero (-400)
+        f17 = f17[["FECHA", "CUENTA", "NOMBRE", "CONCEPTO", "NN_Documento", "NN_Factura", "SALDO", "ASIENTO"]]  # la mala ANTES
+        (tmp / "e17.json").write_text(f17.to_json(orient="records"), encoding="utf-8")
+        df17 = cargar_extracto(tmp / "e17.json")
+        cand17 = df17.attrs.get("candidatas_documento") or []
+        if df17.attrs.get("fuente_documento") != "NN_Factura" or len(cand17) != 2 or cand17[0][0] != "NN_Factura" \
+                or len(cand17[0]) != 4 or cand17[0][3] != 4 or cand17[1][2] != 0:   # 4 apuntes con valor; la mala no cierra ninguno
+            fallos.append("9999917: con dos candidatas tiene que ganar la que mas grupos cierra (NN_Factura), no la primera del SELECT: "
+                          + str(df17.attrs.get("fuente_documento")) + " " + str(cand17))
+        elif "NN_Documento" in df17.columns or "NN_Factura" in df17.columns:
+            fallos.append("9999917: las candidatas se normalizan a FACTURA y no se quedan sueltas")
+        else:
+            print("OK  9999917 (dos candidatas): gana la que mas grupos cierra, y la comparacion consta en attrs")
+        por17 = procesar_extracto(df17)
+        res17 = por17["9999912"][0]
+        origenes = set(res17.loc[res17["INDICE"] > 0, "ORIGEN"])
+        if not origenes <= set(PASOS_ORIGEN):
+            fallos.append("9999917: ORIGEN tiene que decir el paso que formo el grupo, y trae " + str(origenes))
+        elif PASO_DOCUMENTO not in origenes or len(origenes) < 2:
+            # el 88 cierra por documento; lo que queda (Fra 99 / pago sin numero) suma cero
+            # y lo cierra el 2.1 («total») antes de llegar al pareo por importe
+            fallos.append("9999917: en este fixture hay un grupo por documento y otro por total, y ORIGEN trae " + str(origenes))
+        else:
+            print("OK  9999917 (ORIGEN): " + ", ".join(sorted(origenes)) + " -- el paso, no solo «auditoria»")
+        h17 = analizar_hallazgos(df17, por17)
+        if "grupos_por_paso" not in h17 or sum(h17["grupos_por_paso"].values()) != int(res17.loc[res17["INDICE"] > 0, "INDICE"].nunique()):
+            fallos.append("9999917: grupos_por_paso tiene que sumar los grupos nuevos: " + str(h17.get("grupos_por_paso")))
+        else:
+            print("OK  9999917 (hallazgos): grupos_por_paso " + str(h17["grupos_por_paso"]))
+        # la tercera fila: pago anterior a factura SIN fecha de documento
+        f18 = pd.DataFrame([
+            {"FECHA": "2024-03-10", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": -500.0, "FechaEnConcepto": None, "ASIENTO": "1"},
+            {"FECHA": "2024-02-01", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": 500.0, "FechaEnConcepto": None, "ASIENTO": "2"},
+            {"FECHA": "2024-01-01", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": -100.0, "FechaEnConcepto": None, "ASIENTO": "3"},
+            {"FECHA": "2024-01-20", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": 100.0, "FechaEnConcepto": None, "ASIENTO": "4"},
+            # dos facturas vivas al final, para que ni el 2.1 ni el 2.2 junten toda la cuenta
+            # en un solo grupo: la apertura cierra por 2.2b y el par de 500 por importe
+            {"FECHA": "2024-06-01", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": -300.0, "FechaEnConcepto": None, "ASIENTO": "5"},
+            {"FECHA": "2024-07-01", "CUENTA": "9999918", "NOMBRE": "Proveedor Dieciocho", "SALDO": -250.0, "FechaEnConcepto": None, "ASIENTO": "6"},
+        ])
+        (tmp / "e18.json").write_text(f18.to_json(orient="records"), encoding="utf-8")
+        df18 = cargar_extracto(tmp / "e18.json")
+        por18 = procesar_extracto(df18)
+        h18 = analizar_hallazgos(df18, por18)
+        if h18["anomalos"] != 0 or h18.get("anomalos_sin_fecha_doc", 0) < 1:
+            fallos.append("9999918: un pago anterior a una factura SIN fecha de documento va a su propia fila, no a «con la fecha del documento»: "
+                          + str({k: h18.get(k) for k in ("anomalos", "anomalos_sin_fecha_doc", "solo_fecha_registro", "grupos_evaluados")}))
+        else:
+            print("OK  9999918 (sin fecha de documento): el pago anterior cae en su propia fila y no se vende como hallazgo cierto")
+        # 9999919 -- una cuenta de UN solo apunte del 1 de enero va aparte de las «no identificables»
+        f19 = pd.concat([f18, pd.DataFrame([
+            {"FECHA": "2024-01-01", "CUENTA": "9999919", "NOMBRE": "Proveedor Diecinueve", "SALDO": -75.0, "FechaEnConcepto": None, "ASIENTO": "7"},
+            {"FECHA": "2024-01-01", "CUENTA": "9999920", "NOMBRE": "Proveedor Veinte", "SALDO": -40.0, "FechaEnConcepto": None, "ASIENTO": "8"},
+            {"FECHA": "2024-01-01", "CUENTA": "9999920", "NOMBRE": "Proveedor Veinte", "SALDO": -60.0, "FechaEnConcepto": None, "ASIENTO": "9"},
+            {"FECHA": "2024-02-01", "CUENTA": "9999920", "NOMBRE": "Proveedor Veinte", "SALDO": 30.0, "FechaEnConcepto": None, "ASIENTO": "10"},
+        ])], ignore_index=True)
+        (tmp / "e19.json").write_text(f19.to_json(orient="records"), encoding="utf-8")
+        df19 = cargar_extracto(tmp / "e19.json")
+        h19 = analizar_hallazgos(df19, procesar_extracto(df19))
+        if h19.get("cuentas_un_apunte") != 1 or abs(h19.get("importe_un_apunte", 0) - 75.0) > 0.005 \
+                or h19["aperturas_no_identificadas"] != 1 or abs(h19["aperturas_importe_no_identificado"] - 40.0) > 0.005:
+            fallos.append("9999919: la cuenta de un solo apunte (75) va aparte de la apertura no identificable (dos el 1 de enero, 40): "
+                          + str({k: h19.get(k) for k in ("cuentas_un_apunte", "importe_un_apunte", "aperturas_no_identificadas", "aperturas_importe_no_identificado")}))
+        else:
+            print("OK  9999919 (un solo apunte): separada de las aperturas no identificables, con su recuento y su importe")
+        r19 = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "generar_papel.py"),
+                              "--entrada", str(tmp / "e19.json"), "--salida", str(tmp / "p19.xlsx")],
+                             capture_output=True, text=True, encoding="utf-8")
+        tot = [l for l in r19.stdout.splitlines() if l.strip().startswith("TOTAL ")]
+        if not tot or "3 cuenta(s)" not in tot[0] or "pendiente total" not in tot[0] or "verificacion: todas OK" not in tot[0]:
+            fallos.append("9999919: el stdout del papel tiene que acabar con una linea TOTAL con cuentas, apuntes, pendiente y verificacion: " + str(tot))
+        else:
+            print("OK  9999919 (stdout): linea TOTAL con el agregado, que el corte a 30 cuentas se llevaba")
+        ruta18 = tmp / "p18.xlsx"
+        subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "generar_papel.py"),
+                        "--entrada", str(tmp / "e18.json"), "--salida", str(ruta18)], capture_output=True)
+        if ruta18.exists():
+            crit18 = " ".join(str(c.value) for row in load_workbook(ruta18)["Criterios y hallazgos"].iter_rows() for c in row if c.value)
+            if "Solo con la fecha contable" not in crit18 or "por el paso que los formo" not in crit18:
+                fallos.append("9999918: la hoja de criterios tiene que llevar la fila «Solo con la fecha contable» y los grupos por paso")
+            else:
+                print("OK  9999918 (papel): la hoja de criterios lleva la tercera fila y los grupos por paso")
+        else:
+            fallos.append("9999918: el papel no se ha podido generar")
+
+    # segunda puerta: los bloques de arriba (9999915 en adelante) tambien llenan `fallos`,
+    # y hasta el 10/09/2026 se quedaban sin reportar porque la unica puerta iba antes
+    if fallos:
+        print("\nFALLA:")
+        for f in fallos:
+            print("  - " + f)
+        return 1
+    print("\nTodo detectado. El emparejador ve los diecinueve casos y las verificaciones cuadran.")
     return 0
 
 

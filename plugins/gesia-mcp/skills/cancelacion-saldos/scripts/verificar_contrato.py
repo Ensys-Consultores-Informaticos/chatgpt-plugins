@@ -110,10 +110,41 @@ def main() -> int:
             )
 
     # A01 · CONCEPTO vacio no rompe el emparejamiento (va por fecha e importe,
-    # no por texto) pero hace el papel menos legible para revisar a mano
-    vacio_concepto = (
-        df["CONCEPTO"].isna() | (df["CONCEPTO"].astype(str).str.strip() == "")
-    ).mean()
+    # no por texto) pero hace el papel menos legible para revisar a mano.
+    # Lo normal desde el MCP 1.11.0 es que el extracto NO traiga CONCEPTO y si
+    # FechaEnConcepto/NumeroEnConcepto: eso no es un aviso, es el diseño.
+    if "FECHA_DOC" not in df.columns:
+        avisos.append(
+            "A01 · el extracto no trae fecha de documento: ni FechaEnConcepto -que el MCP "
+            "deriva en local si el SELECT pide CONCEPTO- ni CONCEPTO. El emparejamiento "
+            "no la necesita, pero los hallazgos por fecha de documento y el plazo de pago "
+            "quedaran SIN EVALUAR: hay que decirlo al entregar, y la proxima vez pedir "
+            "CONCEPTO en el SELECT (el texto no viaja; la fecha y el numero, si)."
+        )
+        vacio_concepto = 0.0
+    elif int(df["FECHA_DOC"].notna().sum()) == 0:
+        # La columna esta pero ninguna fila trae fecha: en este diario el concepto no la
+        # lleva. Decir «se evaluan igual» aqui era falso (registro del 10/09/2026): los
+        # pagos anteriores solo se comparan con la fecha CONTABLE y van a su propia fila.
+        avisos.append(
+            "A01 · ninguna de las " + str(len(df)) + " filas trae fecha de documento (la columna "
+            + str(df.attrs.get("fuente_fecha_doc")) + " existe pero viene vacia: este diario no "
+            "escribe la fecha en el concepto). Los pagos anteriores a su factura solo se pueden "
+            "comparar con la fecha CONTABLE: el papel los lista en «Solo con la fecha contable» y "
+            "NO son hallazgos confirmados, y no hay plazo de pago medido. Dilo al entregar."
+        )
+        vacio_concepto = 0.0
+    elif "CONCEPTO" not in df.columns:
+        n_fd = int(df["FECHA_DOC"].notna().sum())
+        print("A01 · el extracto no trae el texto del CONCEPTO, y si la fecha y el numero "
+              "derivados de el (" + str(df.attrs.get("fuente_fecha_doc")) + "): " + str(n_fd)
+              + " de " + str(len(df)) + " filas con fecha de documento. El papel no lleva la "
+              "columna de texto y los hallazgos por fecha se evaluan con esas.")
+        vacio_concepto = 0.0
+    else:
+        vacio_concepto = (
+            df["CONCEPTO"].isna() | (df["CONCEPTO"].astype(str).str.strip() == "")
+        ).mean()
     if vacio_concepto > 0.3:
         avisos.append(
             "A01 · el " + format(vacio_concepto * 100, ".0f") + "% de los apuntes "
