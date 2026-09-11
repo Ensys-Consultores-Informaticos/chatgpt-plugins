@@ -1,6 +1,6 @@
 # Gesia MCP para ChatGPT Desktop y Codex
 
-Este directorio es una raíz de marketplace autocontenida para distribuir Gesia MCP 1.12.1. Incluye el servidor MCP local para Windows y los manifiestos que permiten descubrirlo e instalarlo desde ChatGPT Desktop y Codex.
+Este directorio es una raíz de marketplace autocontenida para distribuir Gesia MCP 1.12.2. Incluye el servidor MCP local para Windows y los manifiestos que permiten descubrirlo e instalarlo desde ChatGPT Desktop y Codex.
 
 ## Qué se debe publicar
 
@@ -10,7 +10,7 @@ Si este directorio se convierte en un repositorio GitHub independiente, hay que 
 .agents/plugins/marketplace.json
 plugins/gesia-mcp/.codex-plugin/plugin.json
 plugins/gesia-mcp/.mcp.json
-plugins/gesia-mcp/server/gesia_mcp-1.12.1.exe
+plugins/gesia-mcp/server/gesia_mcp-1.12.2.exe
 ```
 
 No cambies esa estructura. El marketplace resuelve `./plugins/gesia-mcp` desde la raíz del repositorio.
@@ -89,7 +89,7 @@ Subir estos archivos a GitHub **no convierte el ejecutable en un servidor accesi
 ## Diagnóstico
 
 - Si el plugin no aparece, confirma que `.agents/plugins/marketplace.json` está en la raíz publicada, ejecuta `codex plugin marketplace list` y reinicia ChatGPT Desktop.
-- Si el servidor no arranca, comprueba que Windows no haya bloqueado `plugins/gesia-mcp/server/gesia_mcp-1.12.1.exe` y verifica su SHA-256 con `Get-FileHash`.
+- Si el servidor no arranca, comprueba que Windows no haya bloqueado `plugins/gesia-mcp/server/gesia_mcp-1.12.2.exe` y verifica su SHA-256 con `Get-FileHash`.
 - Si no hay conexión con Gesia, abre el expediente y vuelve a arrancar el servidor API desde el menú de Gesia.
 - Si no encuentra el expediente, llama a `configurar` con la ruta correcta o revisa la variable local `GS3_FILE`.
 - Si solo fallan los diarios `.smn`, revisa Microsoft Access Database Engine 2016 de 64 bits.
@@ -99,4 +99,4 @@ Subir estos archivos a GitHub **no convierte el ejecutable en un servidor accesi
 
 No publiques expedientes `.gs3`, diarios `.smn`, archivos `config.toml`, variables de entorno, credenciales, rutas personales ni datos de clientes.
 
-`gesia_mcp-1.12.1.exe` es software propietario. Antes de hacer público el repositorio, confirma expresamente que existe autorización para redistribuir el ejecutable. El hash esperado del binario incluido figura en `plugins/gesia-mcp/SHA256SUMS.txt`.
+`gesia_mcp-1.12.2.exe` es software propietario. Antes de hacer público el repositorio, confirma expresamente que existe autorización para redistribuir el ejecutable. El hash esperado del binario incluido figura en `plugins/gesia-mcp/SHA256SUMS.txt`.
