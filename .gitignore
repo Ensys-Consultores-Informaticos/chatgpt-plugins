@@ -1,0 +1,35 @@
+# Datos de Gesia y clientes
+*.gs3
+*.smn
+
+# Configuración local y secretos
+config.toml
+**/config.toml
+.codex/
+**/.codex/
+.env
+.env.*
+!.env.example
+
+# Copias de seguridad y temporales
+*.bak
+*.backup
+*.old
+*.orig
+*.tmp
+*.temp
+*~
+tmp/
+temp/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
