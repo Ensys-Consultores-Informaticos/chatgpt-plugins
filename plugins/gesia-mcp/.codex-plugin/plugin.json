@@ -1,6 +1,6 @@
 {
   "name": "gesia-mcp",
-  "version": "1.17.2",
+  "version": "1.18.0",
   "description": "Consulta expedientes de auditoría de Gesia y diarios contables mediante un servidor MCP local para Windows.",
   "author": {
     "name": "Ensys Consultores Informáticos, S.L."
@@ -19,7 +19,7 @@
     "logoDark": "./assets/logo.png",
     "brandColor": "#4C0084",
     "displayName": "Gesia MCP",
-    "shortDescription": "Consulta expedientes, estados financieros, diarios y pruebas de muestreo de Gesia en Windows. (MCP 1.22.2) (v1.17.2)",
+    "shortDescription": "Consulta expedientes, estados financieros, diarios y pruebas de muestreo de Gesia en Windows. (MCP 1.23.0) (v1.18.0)",
     "longDescription": "Conecta ChatGPT Desktop y Codex con el expediente abierto en Gesia. Ocho procedimientos de auditoría: estados financieros —balance, cuenta de resultados, patrimonio neto y flujos de efectivo—, revisión del contenido de la memoria, continuidad de saldos de apertura, cancelación de saldos, identificación de riesgos, registro de ejecución, y las dos pruebas de muestreo de ForSampling contra las facturas escaneadas. Cada procedimiento deja el papel de trabajo en el propio expediente: son propuestas, y quien valora y concluye es el auditor que firma. Los nombres de proveedores y clientes viajan anonimizados —el asistente ve un código por cuenta, no la razón social— y el papel los recupera en tu equipo al entregarlo. Las facturas escaneadas se tachan en tu equipo antes de subirlas: los PDF no salen de tu disco, y los importes, las fechas y el número de documento quedan legibles. Lo que no se puede tapar se te dice antes de subir nada. Con el conector nuevo de Gesia puede además escribir las respuestas del cuestionario en el propio expediente, en simulación mientras no le pidas lo contrario y dejando la casilla de realizado sin marcar. Requiere Windows y Gesia instalado.",
     "developerName": "Ensys Consultores Informáticos, S.L.",
     "category": "Productivity",

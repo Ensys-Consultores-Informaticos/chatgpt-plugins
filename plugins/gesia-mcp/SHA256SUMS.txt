@@ -1,1 +1,1 @@
-7a5315b0f5e74e5c8f4ed708ca863254ffaf51f6f23354195d33962837de09bc  server/gesia_mcp-1.22.2.exe
+5c7a9514448e2b6f77779d8e0a8cccfb46e188f5c0be4ad120d61a95c15f0ccb  server/gesia_mcp-1.23.0.exe
